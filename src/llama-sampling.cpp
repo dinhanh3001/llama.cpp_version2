@@ -19,8 +19,9 @@
 
 #include <map>
 #include <string>
-extern std::map<std::string, double> op_timings_ms;
-extern bool timings_initialized;
+#include <mutex>
+extern std::map<std::string, double> op_timings_ms; // <-- SỬA LẠI THÀNH double
+extern std::mutex timings_mutex;
 
 // the ring buffer works similarly to std::deque, but with a fixed capacity
 template<typename T>
@@ -2668,40 +2669,51 @@ void llama_perf_sampler_print(const struct llama_sampler * chain) {
     LLAMA_LOG_INFO("%s:    sampling time = %10.2f ms / %5d runs   (%8.2f ms per token, %8.2f tokens per second)\n",
             __func__, data.t_sample_ms, data.n_sample, data.t_sample_ms / data.n_sample, 1e3 / data.t_sample_ms * data.n_sample);
             // --- BẮT ĐẦU CODE THÊM MỚI ---
-     // ====== IN RA CHI TIET QUA TRINH SAMPLING =======================
-    if (!timings_initialized) {
-        op_timings_ms["Total_Attn_MHA"] = 0.0;
-        op_timings_ms["Total_FFN"] = 0.0;
-        op_timings_ms["Total_Norm"] = 0.0;
-        op_timings_ms["Total_MoE_FFN"] = 0.0; // Thêm key này nếu bạn đã đo MoE
-        timings_initialized = true;
-    }
+    // --- BẮT ĐẦU CODE THAY THẾ TRONG llama_perf_sampler_print ---
+
+    // Khởi tạo map nếu cần (an toàn hơn khi làm ở đây và có khóa)
+    {
+         std::lock_guard<std::mutex> lock(timings_mutex); // Khóa trước khi kiểm tra/khởi tạo
+         if (op_timings_ms.find("Total_Attn_MHA") == op_timings_ms.end()) op_timings_ms["Total_Attn_MHA"] = 0.0;
+         if (op_timings_ms.find("Total_FFN") == op_timings_ms.end()) op_timings_ms["Total_FFN"] = 0.0;
+         if (op_timings_ms.find("Total_Norm") == op_timings_ms.end()) op_timings_ms["Total_Norm"] = 0.0;
+         if (op_timings_ms.find("Total_MoE_FFN") == op_timings_ms.end()) op_timings_ms["Total_MoE_FFN"] = 0.0;
+    } // Mở khóa
 
     double total_op_time = 0;
-    // VÒNG LẶP 1 (SỬA LẠI)
-    for (auto const& pair : op_timings_ms) {
-        double val = pair.second; // Lấy giá trị từ pair
+    std::map<std::string, double> timings_copy; // Tạo bản sao để tránh giữ khóa lâu
+
+    {
+        std::lock_guard<std::mutex> lock(timings_mutex); // Khóa để sao chép map
+        timings_copy = op_timings_ms;                  // Sao chép dữ liệu
+         // Tùy chọn: Reset map gốc ngay sau khi sao chép nếu muốn
+         // for (auto &pair : op_timings_ms) { pair.second = 0.0; }
+    } // Mở khóa
+
+    // Tính tổng từ bản sao (không cần khóa nữa)
+    for (auto const& pair : timings_copy) {
+        double val = pair.second;
         if (val > 0) {
             total_op_time += val;
         }
     }
 
     printf("\n--- Detailed Function Profiling (within sampler print) ---\n");
-    // VÒNG LẶP 2 (SỬA LẠI)
-    for (auto const& pair : op_timings_ms) {
-         const std::string& key = pair.first; // Lấy key từ pair
-         double val = pair.second;           // Lấy giá trị từ pair
+    // In từ bản sao (không cần khóa nữa)
+    for (auto const& pair : timings_copy) {
+         const std::string& key = pair.first;
+         double val = pair.second;
 
          printf("%s: %-20s time = %10.2f ms (%6.2f %%)\n",
                 __func__,
-                key.c_str(), // Dùng key.c_str()
-                val,         // Dùng val
+                key.c_str(),
+                val,
                 (total_op_time > 0) ? (val / total_op_time) * 100.0 : 0.0);
     }
      printf("%s: %-20s time = %10.2f ms\n", __func__, "Total Profiled", total_op_time);
      printf("----------------------------------------------------------\n");
 
-    // --- KẾT THÚC CODE THÊM MỚI ---
+    // --- KẾT THÚC CODE THAY THẾ ---
 }
 
 void llama_perf_sampler_reset(struct llama_sampler * chain) {

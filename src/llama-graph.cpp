@@ -15,10 +15,15 @@
 #include <cassert>
 #include <cmath>
 #include <cstring>
+#include <mutex>
 
 // bien toan cuc luu tru thoi gian
+// Quay lại dùng double thường
 std::map<std::string, double> op_timings_ms;
-bool timings_initialized = false;
+// Khai báo một mutex để bảo vệ map
+std::mutex timings_mutex;
+// bool timings_initialized = false; // Có thể không cần nữa
+//bool timings_initialized = false;
 
 
 void llm_graph_input_embd::set_input(const llama_ubatch * ubatch) {
@@ -650,7 +655,7 @@ ggml_tensor * llm_graph_context::build_norm(
        llm_norm_type   type,
                  int   il) const {
     // ============================THEM HAM TINH TOAN =================================
-     auto start_norm = std::chrono::high_resolution_clock::now();               
+     auto start_norm = std::chrono::steady_clock::now();               
     switch (type) {
         case LLM_NORM:       cur = ggml_norm    (ctx0, cur, hparams.f_norm_eps);     break;
         case LLM_NORM_RMS:   cur = ggml_rms_norm(ctx0, cur, hparams.f_norm_rms_eps); break;
@@ -676,8 +681,12 @@ ggml_tensor * llm_graph_context::build_norm(
     if (mb) {
         cur = ggml_add(ctx0, cur, mb);
     }
-    auto end_norm = std::chrono::high_resolution_clock::now(); // 
-    op_timings_ms["Total_Norm"] += std::chrono::duration<double, std::milli>(end_norm - start_norm).count();
+   auto end_norm = std::chrono::steady_clock::now(); // Đảm bảo dòng này ở ngay trước
+    double duration_ms = std::chrono::duration<double, std::milli>(end_norm - start_norm).count();
+    { // Bắt đầu khối bảo vệ
+        std::lock_guard<std::mutex> lock(timings_mutex); // Khóa mutex
+        op_timings_ms["Total_Norm"] += duration_ms;       // Cộng dồn an toàn
+    } // Mutex tự động mở khóa
    // =====================================================================
 
     return cur;
@@ -701,7 +710,7 @@ ggml_tensor * llm_graph_context::build_ffn(
 
       // ============================ TINH TOAN THOI GIAN THUC THI CUA HAM BUILD_FFN =======================              
    
-    auto start_ffn = std::chrono::high_resolution_clock::now();
+    auto start_ffn = std::chrono::steady_clock::now();
 
       ggml_tensor * tmp = up ? build_lora_mm(up, cur) : cur; // <-- NGHI PHAM THU NHAT ( FFN UP )
     cb(tmp, "ffn_up", il);
@@ -829,8 +838,14 @@ ggml_tensor * llm_graph_context::build_ffn(
         cb(cur, "ffn_down_s", il);
     }
 
-    auto end_ffn = std::chrono::high_resolution_clock::now(); // 
-    op_timings_ms["Total_FFN"] += std::chrono::duration<double, std::milli>(end_ffn - start_ffn).count();
+    // Ngay trước lệnh 'return cur;'
+    auto end_ffn = std::chrono::steady_clock::now(); // Đảm bảo dòng này ở ngay trước
+   //printf(">>> Adding time for FFN\n");
+    double duration_ms = std::chrono::duration<double, std::milli>(end_ffn - start_ffn).count();
+    { // Bắt đầu khối bảo vệ
+        std::lock_guard<std::mutex> lock(timings_mutex); // Khóa mutex
+        op_timings_ms["Total_FFN"] += duration_ms;        // Cộng dồn an toàn
+    } // Mutex tự động mở khóa
    // ==============================================================================================
 
     return cur;
@@ -893,7 +908,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
          ggml_tensor * probs_in) const {
 
   /// ================================THEM HAM TINH TOAN THOI GIAN ==================================
-  auto start_moe_ffn = std::chrono::high_resolution_clock::now();
+  auto start_moe_ffn = std::chrono::steady_clock::now();
 
     const int64_t n_embd   = cur->ne[0];
     const int64_t n_tokens = cur->ne[1];
@@ -1085,11 +1100,13 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     }
 
     cb(moe_out, "ffn_moe_out", il);
-
-    auto end_moe_ffn = std::chrono::high_resolution_clock::now(); // 
-    op_timings_ms["Total_MoE_FFN"] += std::chrono::duration<double, std::milli>(end_moe_ffn - start_moe_ffn).count();
-
-    return moe_out;
+auto end_moe_ffn = std::chrono::steady_clock::now(); // Đảm bảo dòng này ở ngay trước
+    double duration_ms = std::chrono::duration<double, std::milli>(end_moe_ffn - start_moe_ffn).count();
+    { // Bắt đầu khối bảo vệ
+        std::lock_guard<std::mutex> lock(timings_mutex); // Khóa mutex
+        op_timings_ms["Total_MoE_FFN"] += duration_ms;    // Cộng dồn an toàn
+    } // Mutex tự động mở khóa
+    return moe_out; 
 }
 
 // input embeddings with optional lora
@@ -1298,7 +1315,7 @@ ggml_tensor * llm_graph_context::build_attn_mha(
                float   kq_scale,
                  int   il) const {
       // ======================== TINH TOAN THOI GIAN THUC THI CUA BUILD_ATTN_NHA ====================
-      auto start_attn = std::chrono::high_resolution_clock::now();
+      auto start_attn = std::chrono::steady_clock::now();
 
     const bool v_trans = v->nb[1] > v->nb[2];
 
@@ -1423,8 +1440,12 @@ ggml_tensor * llm_graph_context::build_attn_mha(
     }
 
     ggml_build_forward_expand(gf, cur);
-    auto end_attn = std::chrono::high_resolution_clock::now(); 
-    op_timings_ms["Total_Attn_MHA"] += std::chrono::duration<double, std::milli>(end_attn - start_attn).count(); //
+    auto end_attn = std::chrono::steady_clock::now(); // Đảm bảo dòng này ở ngay trước
+    double duration_ms = std::chrono::duration<double, std::milli>(end_attn - start_attn).count();
+    { // Bắt đầu khối bảo vệ
+        std::lock_guard<std::mutex> lock(timings_mutex); // Khóa mutex
+        op_timings_ms["Total_Attn_MHA"] += duration_ms;    // Cộng dồn an toàn
+    } // Mutex tự động mở khóa
     return cur;
 }
 
