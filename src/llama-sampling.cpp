@@ -17,6 +17,11 @@
 #include <unordered_map>
 #include <stdexcept>
 
+#include <map>
+#include <string>
+extern std::map<std::string, double> op_timings_ms;
+extern bool timings_initialized;
+
 // the ring buffer works similarly to std::deque, but with a fixed capacity
 template<typename T>
 struct ring_buffer {
@@ -2662,6 +2667,41 @@ void llama_perf_sampler_print(const struct llama_sampler * chain) {
 
     LLAMA_LOG_INFO("%s:    sampling time = %10.2f ms / %5d runs   (%8.2f ms per token, %8.2f tokens per second)\n",
             __func__, data.t_sample_ms, data.n_sample, data.t_sample_ms / data.n_sample, 1e3 / data.t_sample_ms * data.n_sample);
+            // --- BẮT ĐẦU CODE THÊM MỚI ---
+     // ====== IN RA CHI TIET QUA TRINH SAMPLING =======================
+    if (!timings_initialized) {
+        op_timings_ms["Total_Attn_MHA"] = 0.0;
+        op_timings_ms["Total_FFN"] = 0.0;
+        op_timings_ms["Total_Norm"] = 0.0;
+        op_timings_ms["Total_MoE_FFN"] = 0.0; // Thêm key này nếu bạn đã đo MoE
+        timings_initialized = true;
+    }
+
+    double total_op_time = 0;
+    // VÒNG LẶP 1 (SỬA LẠI)
+    for (auto const& pair : op_timings_ms) {
+        double val = pair.second; // Lấy giá trị từ pair
+        if (val > 0) {
+            total_op_time += val;
+        }
+    }
+
+    printf("\n--- Detailed Function Profiling (within sampler print) ---\n");
+    // VÒNG LẶP 2 (SỬA LẠI)
+    for (auto const& pair : op_timings_ms) {
+         const std::string& key = pair.first; // Lấy key từ pair
+         double val = pair.second;           // Lấy giá trị từ pair
+
+         printf("%s: %-20s time = %10.2f ms (%6.2f %%)\n",
+                __func__,
+                key.c_str(), // Dùng key.c_str()
+                val,         // Dùng val
+                (total_op_time > 0) ? (val / total_op_time) * 100.0 : 0.0);
+    }
+     printf("%s: %-20s time = %10.2f ms\n", __func__, "Total Profiled", total_op_time);
+     printf("----------------------------------------------------------\n");
+
+    // --- KẾT THÚC CODE THÊM MỚI ---
 }
 
 void llama_perf_sampler_reset(struct llama_sampler * chain) {

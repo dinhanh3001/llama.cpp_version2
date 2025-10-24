@@ -9,9 +9,17 @@
 #include "llama-memory-hybrid.h"
 #include "llama-memory-recurrent.h"
 
+#include<chrono> 
+#include<map> 
+#include<string> 
 #include <cassert>
 #include <cmath>
 #include <cstring>
+
+// bien toan cuc luu tru thoi gian
+std::map<std::string, double> op_timings_ms;
+bool timings_initialized = false;
+
 
 void llm_graph_input_embd::set_input(const llama_ubatch * ubatch) {
     if (ubatch->token) {
@@ -641,6 +649,8 @@ ggml_tensor * llm_graph_context::build_norm(
          ggml_tensor * mb,
        llm_norm_type   type,
                  int   il) const {
+    // ============================THEM HAM TINH TOAN =================================
+     auto start_norm = std::chrono::high_resolution_clock::now();               
     switch (type) {
         case LLM_NORM:       cur = ggml_norm    (ctx0, cur, hparams.f_norm_eps);     break;
         case LLM_NORM_RMS:   cur = ggml_rms_norm(ctx0, cur, hparams.f_norm_rms_eps); break;
@@ -666,6 +676,9 @@ ggml_tensor * llm_graph_context::build_norm(
     if (mb) {
         cur = ggml_add(ctx0, cur, mb);
     }
+    auto end_norm = std::chrono::high_resolution_clock::now(); // 
+    op_timings_ms["Total_Norm"] += std::chrono::duration<double, std::milli>(end_norm - start_norm).count();
+   // =====================================================================
 
     return cur;
 }
@@ -685,7 +698,12 @@ ggml_tensor * llm_graph_context::build_ffn(
      llm_ffn_op_type   type_op,
    llm_ffn_gate_type   type_gate,
                  int   il) const {
-    ggml_tensor * tmp = up ? build_lora_mm(up, cur) : cur;
+
+      // ============================ TINH TOAN THOI GIAN THUC THI CUA HAM BUILD_FFN =======================              
+   
+    auto start_ffn = std::chrono::high_resolution_clock::now();
+
+      ggml_tensor * tmp = up ? build_lora_mm(up, cur) : cur; // <-- NGHI PHAM THU NHAT ( FFN UP )
     cb(tmp, "ffn_up", il);
 
     if (up_b) {
@@ -702,12 +720,12 @@ ggml_tensor * llm_graph_context::build_ffn(
         switch (type_gate) {
             case LLM_FFN_SEQ:
                 {
-                    cur = build_lora_mm(gate, tmp);
+                    cur = build_lora_mm(gate, tmp); // <-- HAM CAN KIEM TRA THU 2 ( FFN GATE )
                     cb(cur, "ffn_gate", il);
                 } break;
             case LLM_FFN_PAR:
                 {
-                    cur = build_lora_mm(gate, cur);
+                    cur = build_lora_mm(gate, cur);// <-- HAM CAN KIEM TRA THU 3 
                     cb(cur, "ffn_gate", il);
                 } break;
         }
@@ -794,7 +812,7 @@ ggml_tensor * llm_graph_context::build_ffn(
         cur = build_lora_mm(down, cur);
         if (arch == LLM_ARCH_GLM4 || arch == LLM_ARCH_GLM4_MOE) {
             // GLM4 and GLM4_MOE seem to have numerical issues with half-precision accumulators
-            ggml_mul_mat_set_prec(cur, GGML_PREC_F32);
+            ggml_mul_mat_set_prec(cur, GGML_PREC_F32); // <-- HAM CAN KIEM TRA THU 4 ( FFN DOWN) 
         }
     }
 
@@ -810,6 +828,10 @@ ggml_tensor * llm_graph_context::build_ffn(
         cur = ggml_mul(ctx0, cur, down_s);
         cb(cur, "ffn_down_s", il);
     }
+
+    auto end_ffn = std::chrono::high_resolution_clock::now(); // 
+    op_timings_ms["Total_FFN"] += std::chrono::duration<double, std::milli>(end_ffn - start_ffn).count();
+   // ==============================================================================================
 
     return cur;
 }
@@ -869,6 +891,10 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         llama_expert_gating_func_type gating_op,
                  int   il,
          ggml_tensor * probs_in) const {
+
+  /// ================================THEM HAM TINH TOAN THOI GIAN ==================================
+  auto start_moe_ffn = std::chrono::high_resolution_clock::now();
+
     const int64_t n_embd   = cur->ne[0];
     const int64_t n_tokens = cur->ne[1];
     const bool weight_before_ffn = arch == LLM_ARCH_LLAMA4; // for llama4, we apply the sigmoid-ed weights before the FFN
@@ -1059,6 +1085,9 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     }
 
     cb(moe_out, "ffn_moe_out", il);
+
+    auto end_moe_ffn = std::chrono::high_resolution_clock::now(); // 
+    op_timings_ms["Total_MoE_FFN"] += std::chrono::duration<double, std::milli>(end_moe_ffn - start_moe_ffn).count();
 
     return moe_out;
 }
@@ -1268,6 +1297,9 @@ ggml_tensor * llm_graph_context::build_attn_mha(
          ggml_tensor * v_mla,
                float   kq_scale,
                  int   il) const {
+      // ======================== TINH TOAN THOI GIAN THUC THI CUA BUILD_ATTN_NHA ====================
+      auto start_attn = std::chrono::high_resolution_clock::now();
+
     const bool v_trans = v->nb[1] > v->nb[2];
 
     // split the batch into streams if needed
@@ -1326,7 +1358,7 @@ ggml_tensor * llm_graph_context::build_attn_mha(
 
         cur = ggml_reshape_2d(ctx0, cur, cur->ne[0]*cur->ne[1], cur->ne[2]*cur->ne[3]);
     } else {
-        ggml_tensor * kq = ggml_mul_mat(ctx0, k, q);
+        ggml_tensor * kq = ggml_mul_mat(ctx0, k, q); // <-- HAM CAN KIEM TRA THU 5 (ATTENTION KQ)
         cb(kq, "kq", il);
 
         // note: this op tends to require high floating point range
@@ -1370,7 +1402,7 @@ ggml_tensor * llm_graph_context::build_attn_mha(
             cb(v, "v_cont", il);
         }
 
-        ggml_tensor * kqv = ggml_mul_mat(ctx0, v, kq);
+        ggml_tensor * kqv = ggml_mul_mat(ctx0, v, kq); // <-- HAM CAN KIEM TRA THU 6 (ATTENTION V)
         cb(kqv, "kqv", il);
 
         // for MLA with the absorption optimization, we need to "decompress" from MQA back to MHA
@@ -1391,7 +1423,8 @@ ggml_tensor * llm_graph_context::build_attn_mha(
     }
 
     ggml_build_forward_expand(gf, cur);
-
+    auto end_attn = std::chrono::high_resolution_clock::now(); 
+    op_timings_ms["Total_Attn_MHA"] += std::chrono::duration<double, std::milli>(end_attn - start_attn).count(); //
     return cur;
 }
 
