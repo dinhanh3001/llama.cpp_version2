@@ -1203,31 +1203,37 @@ static void ggml_compute_forward_mul_mat_one_chunk(
 }
 
 void ggml_compute_forward_mul_mat(
-        const struct ggml_compute_params * params,
-              struct ggml_tensor * dst) {
+        const struct ggml_compute_params * params,// tham so tinh toan 
+              struct ggml_tensor * dst) { // tensor luu kiet qua 
 
-    const struct ggml_tensor * src0 = dst->src[0];
-    const struct ggml_tensor * src1 = dst->src[1];
+    const struct ggml_tensor * src0 = dst->src[0]; // ma tran nguon thu nhat 
+    const struct ggml_tensor * src1 = dst->src[1]; // ma tran nguon thu hai 
 
     GGML_TENSOR_BINARY_OP_LOCALS
 
-    const int ith = params->ith;
-    const int nth = params->nth;
-
-    enum ggml_type           const vec_dot_type         = type_traits_cpu[src0->type].vec_dot_type;
+    const int ith = params->ith;// chi so cua thread hien tai 
+    const int nth = params->nth; // tong so thread 
+/// ================ cau hinh du lieu =============================
+// xac dinh kieu du lieu cho phep nhan vector (dot product)
+// lay ham chuyen doi tu float sang kieu du lieu cu the 
+// lay so hang cho moi phep tinh dot product 
+    enum ggml_type           const vec_dot_type         = type_traits_cpu[src0->type].vec_dot_type; 
     ggml_from_float_t        const from_float           = type_traits_cpu[vec_dot_type].from_float;
     int64_t                  const vec_dot_num_rows     = type_traits_cpu[src0->type].nrows;
 
+    // ============ kiem tra kich thuoc phu hop giua cac ma tran ===========================
     GGML_ASSERT(ne0 == ne01);
     GGML_ASSERT(ne1 == ne11);
     GGML_ASSERT(ne2 == ne12);
     GGML_ASSERT(ne3 == ne13);
 
     // we don't support permuted src0 or src1
+    // kiem tra ma tran khong bi hoan vi 
     GGML_ASSERT(nb00 == ggml_type_size(src0->type));
     GGML_ASSERT(nb10 == ggml_type_size(src1->type));
 
     // dst cannot be transposed or permuted
+    // kiem tra ma tran dich khong bi hoan vi hoac xao tron nguoc lai 
     GGML_ASSERT(nb0 == sizeof(float));
     GGML_ASSERT(nb0 <= nb1);
     GGML_ASSERT(nb1 <= nb2);
@@ -1237,7 +1243,10 @@ void ggml_compute_forward_mul_mat(
     //   compute by src0 rows
 
     // TODO: extract to "extra_op"
+
+    // ========================= TOI UU HOA CHO LLAMAFILE ======================
 #if GGML_USE_LLAMAFILE
+    // tinh toan he so broadcast 
     // broadcast factors
     const int64_t r2 = ne12 / ne02;
     const int64_t r3 = ne13 / ne03;
@@ -1245,6 +1254,8 @@ void ggml_compute_forward_mul_mat(
     const bool src1_cont = ggml_is_contiguous(src1);
 
     if (src1_cont) {
+        // su dung SGEMM (single precision general matri multiplication)
+        // neu ma tran lien tuc trong bo nho 
         for (int64_t i13 = 0; i13 < ne13; i13++)
             for (int64_t i12 = 0; i12 < ne12; i12++)
                 if (!llamafile_sgemm(params,
